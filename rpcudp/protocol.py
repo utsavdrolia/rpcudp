@@ -12,7 +12,7 @@ from rpcudp.exceptions import MalformedMessage
 
 
 class RPCProtocol(protocol.DatagramProtocol):
-    noisy = True
+    noisy = False
     REQ = 0x00
     RESP = 0x01
     def __init__(self, waitTimeout=5):

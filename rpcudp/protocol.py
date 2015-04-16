@@ -1,6 +1,6 @@
 import umsgpack
 import random
-from hashlib import sha1
+import hashlib
 from base64 import b64encode
 
 from twisted.internet import protocol
@@ -12,11 +12,12 @@ from rpcudp.exceptions import MalformedMessage
 
 
 class RPCProtocol(protocol.DatagramProtocol):
-    noisy = False
-
+    noisy = True
+    REQ = 0x00
+    RESP = 0x01
     def __init__(self, waitTimeout=5):
         """
-        @param waitTimeout: Consider it a connetion failure if no response
+        @param waitTimeout: Consider it a connection failure if no response
         within this time window.
         """
         self._waitTimeout = waitTimeout
@@ -29,13 +30,11 @@ class RPCProtocol(protocol.DatagramProtocol):
             log.msg("received datagram too small from %s, ignoring" % repr(address))
             return
 
-        msgID = datagram[1:21]
-        data = umsgpack.unpackb(datagram[21:])
-
-        if datagram[0] == '\x00':
-            self._acceptRequest(msgID, data, address)
-        elif datagram[0] == '\x01':
-            self._acceptResponse(msgID, data, address)
+        [mtype, msg_id, data] = umsgpack.unpackb(datagram)
+        if mtype == self.REQ:
+            self._acceptRequest(msg_id, data, address)
+        elif mtype == self.RESP:
+            self._acceptResponse(msg_id, data, address)
         else:
             # otherwise, don't know the format, don't do anything
             log.msg("Received unknown message from %s, ignoring" % repr(address))
@@ -67,7 +66,7 @@ class RPCProtocol(protocol.DatagramProtocol):
     def _sendResponse(self, response, msgID, address):
         if self.noisy:
             log.msg("sending response for msg id %s to %s" % (b64encode(msgID), address))
-        txdata = '\x01%s%s' % (msgID, umsgpack.packb(response))
+        txdata = umsgpack.packb([self.RESP, msgID, response])
         self.transport.write(txdata, address)
 
     def _timeout(self, msgID):
@@ -83,20 +82,31 @@ class RPCProtocol(protocol.DatagramProtocol):
         try:
             return object.__getattr__(self, name)
         except AttributeError:
+            log.msg("Attrbute Error:{}".format(name))
             pass
 
         def func(address, *args):
-            msgID = sha1(str(random.getrandbits(255))).digest()
-            data = umsgpack.packb([name, args])
+            if self.noisy:
+                log.msg("Creating RPC to send:{}".format(name))
+            msgID = hashlib.sha1(str(random.getrandbits(255)).encode()).digest()
+            if self.noisy:
+                log.msg("RPC MsgID:{}".format(msgID))
+            data = umsgpack.packb([self.REQ, msgID, [name, args]])
+            if self.noisy:
+                log.msg("RPC Data:{}".format(data))
             if len(data) > 8192:
                 msg = "Total length of function name and arguments cannot exceed 8K"
-                raise MalformedMessage(msg)
-            txdata = '\x00%s%s' % (msgID, data)
+                log.err(msg)
             if self.noisy:
-                log.msg("calling remote function %s on %s (msgid %s)" % (name, address, b64encode(msgID)))
-            self.transport.write(txdata, address)
+                log.msg("calling remote function {} on {} (msgid {})".format(name, address, b64encode(msgID)))
+
+            self.transport.write(data, address)
+            if self.noisy:
+                log.msg("Sending data:{}".format(data))
             d = defer.Deferred()
             timeout = reactor.callLater(self._waitTimeout, self._timeout, msgID)
             self._outstanding[msgID] = (d, timeout)
             return d
+        if self.noisy:
+            log.msg("Created RPC. Sent data. Returning:{}".format(func))
         return func
